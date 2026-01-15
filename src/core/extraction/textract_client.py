@@ -1,45 +1,92 @@
 """
-AWS Textract client for document analysis.
+AWS Textract client for document analysis with production-grade error handling.
 """
 import boto3
 import json
 from typing import Dict, Any, Optional
 from botocore.exceptions import ClientError, NoCredentialsError
+import sys
+from pathlib import Path
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+from src.utils.retry import retry_aws_operation, is_retryable_aws_error, NonRetryableError
 
 
 class TextractClient:
-    """Client for AWS Textract document analysis."""
+    """Client for AWS Textract document analysis with retry logic."""
     
-    def __init__(self, region_name: str = 'us-east-1'):
-        """Initialize Textract client."""
+    def __init__(self, region_name: str = 'us-east-1', max_retries: int = 3):
+        """
+        Initialize Textract client.
+        
+        Args:
+            region_name: AWS region for Textract
+            max_retries: Maximum number of retry attempts for API calls
+        """
         try:
             self.textract = boto3.client('textract', region_name=region_name)
             self.region = region_name
+            self.max_retries = max_retries
         except NoCredentialsError:
-            raise Exception("AWS credentials not found. Please configure your credentials.")
+            raise NonRetryableError("AWS credentials not found. Please configure your credentials.")
+        except Exception as e:
+            raise NonRetryableError(f"Failed to initialize Textract client: {str(e)}")
     
     def analyze_document(self, document_bytes: bytes) -> Dict[str, Any]:
         """
-        Analyze document using AWS Textract AnalyzeDocument API.
+        Analyze document using AWS Textract AnalyzeDocument API with retry logic.
         
         Args:
             document_bytes: Document content as bytes
             
         Returns:
             Dict containing Textract analysis results
+            
+        Raises:
+            NonRetryableError: For non-retryable errors (invalid input, auth, etc.)
+            Exception: For retryable errors that exhausted all retries
         """
+        def _analyze():
+            """Inner function for retry logic."""
+            try:
+                response = self.textract.analyze_document(
+                    Document={'Bytes': document_bytes},
+                    FeatureTypes=['TABLES', 'FORMS']
+                )
+                return response
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+                error_message = e.response.get('Error', {}).get('Message', str(e))
+                
+                # Check if retryable
+                if not is_retryable_aws_error(e):
+                    raise NonRetryableError(
+                        f"Textract API error ({error_code}): {error_message}"
+                    ) from e
+                
+                # Re-raise for retry logic
+                raise
+        
+        # Retry with exponential backoff
+        def on_retry(attempt: int, error: Exception):
+            """Callback for retry events."""
+            error_code = error.response.get('Error', {}).get('Code', 'Unknown') if hasattr(error, 'response') else 'Unknown'
+            print(f"⚠️  Textract API retry {attempt}/{self.max_retries} (Error: {error_code})...")
+        
         try:
-            response = self.textract.analyze_document(
-                Document={'Bytes': document_bytes},
-                FeatureTypes=['TABLES', 'FORMS']
+            return retry_aws_operation(
+                _analyze,
+                max_retries=self.max_retries,
+                initial_delay=1.0,
+                max_delay=60.0,
+                on_retry=on_retry
             )
-            return response
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            raise Exception(f"Textract API error ({error_code}): {error_message}")
+        except NonRetryableError:
+            raise
         except Exception as e:
-            raise Exception(f"Unexpected error during document analysis: {str(e)}")
+            raise Exception(f"Textract analysis failed after retries: {str(e)}") from e
     
     def format_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """

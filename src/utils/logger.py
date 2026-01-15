@@ -4,7 +4,7 @@ Logging utilities.
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 class Logger:
@@ -72,6 +72,44 @@ class Logger:
     def log_error_with_context(self, error: Exception, context: str) -> None:
         """Log error with context."""
         self.error(f"Error in {context}: {str(error)}")
+    
+    def log_with_context(self, level: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Log message with structured context.
+        
+        Args:
+            level: Log level ('info', 'debug', 'warning', 'error', 'critical')
+            message: Log message
+            context: Optional context dictionary
+        """
+        if context:
+            context_str = " | ".join(f"{k}={v}" for k, v in context.items())
+            message = f"{message} | {context_str}"
+        
+        if level == 'info':
+            self.info(message)
+        elif level == 'debug':
+            self.debug(message)
+        elif level == 'warning':
+            self.warning(message)
+        elif level == 'error':
+            self.error(message)
+        elif level == 'critical':
+            self.critical(message)
+    
+    def log_performance(self, operation: str, duration_ms: float, context: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Log performance metrics.
+        
+        Args:
+            operation: Operation name
+            duration_ms: Duration in milliseconds
+            context: Optional context
+        """
+        perf_context = {"operation": operation, "duration_ms": f"{duration_ms:.2f}"}
+        if context:
+            perf_context.update(context)
+        self.log_with_context('info', f"Performance: {operation}", perf_context)
 
 
 # Global logger instance

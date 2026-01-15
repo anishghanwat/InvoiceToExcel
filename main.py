@@ -18,11 +18,13 @@ def show_help():
     print("Usage:")
     print("  python main.py cli <document_file>        - Simple extraction")
     print("  python main.py interactive <document_file> - Interactive CSV creation")
+    print("  python main.py bulk <command>             - Bulk processing (see bulk help)")
     print("  python main.py help                       - Show this help")
     print()
     print("Examples:")
     print("  python main.py cli invoice.pdf")
     print("  python main.py interactive receipt.jpg")
+    print("  python main.py bulk process-dir ./invoices")
     print()
     print("Supported formats: PDF, PNG, JPG, JPEG")
 
@@ -58,6 +60,13 @@ def main():
         # Modify sys.argv for interactive interface
         sys.argv = ["interactive_csv.py", sys.argv[2]]
         interactive_main()
+    
+    elif command == "bulk":
+        # Run bulk processing CLI
+        from src.interfaces.bulk_cli import main as bulk_main
+        # Remove 'bulk' from args and pass rest to bulk CLI
+        sys.argv = ["bulk_cli"] + sys.argv[2:]
+        bulk_main()
     
     else:
         print(f"Unknown command: {command}")

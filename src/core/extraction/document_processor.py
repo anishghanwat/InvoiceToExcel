@@ -14,9 +14,19 @@ class DocumentProcessor:
     SUPPORTED_FORMATS = {'.pdf', '.png', '.jpg', '.jpeg'}
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
     
-    def __init__(self, aws_region: str = 'us-east-1'):
-        """Initialize document processor."""
-        self.textract_client = TextractClient(region_name=aws_region)
+    def __init__(self, aws_region: Optional[str] = None):
+        """
+        Initialize document processor.
+        
+        Args:
+            aws_region: AWS region for Textract (defaults to config settings)
+        """
+        from config import settings
+        region = aws_region or settings.DEFAULT_AWS_REGION
+        self.textract_client = TextractClient(
+            region_name=region,
+            max_retries=settings.TEXTRACT_MAX_RETRIES
+        )
     
     def validate_file(self, file_path: str) -> bool:
         """
@@ -29,20 +39,39 @@ class DocumentProcessor:
             True if file is valid
             
         Raises:
-            Exception: If file is invalid
+            FileNotFoundError: If file doesn't exist
+            ValueError: If file format or size is invalid
         """
+        # Check file exists
         if not os.path.exists(file_path):
-            raise Exception(f"File not found: {file_path}")
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        # Check if it's a file (not directory)
+        if not os.path.isfile(file_path):
+            raise ValueError(f"Path is not a file: {file_path}")
         
         # Check file extension
         file_ext = Path(file_path).suffix.lower()
         if file_ext not in self.SUPPORTED_FORMATS:
-            raise Exception(f"Unsupported file format: {file_ext}. Supported: {', '.join(self.SUPPORTED_FORMATS)}")
+            raise ValueError(
+                f"Unsupported file format: {file_ext}. "
+                f"Supported formats: {', '.join(self.SUPPORTED_FORMATS)}"
+            )
         
         # Check file size
         file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            raise ValueError(f"File is empty: {file_path}")
+        
         if file_size > self.MAX_FILE_SIZE:
-            raise Exception(f"File too large: {file_size / (1024*1024):.1f}MB. Max size: {self.MAX_FILE_SIZE / (1024*1024)}MB")
+            raise ValueError(
+                f"File too large: {file_size / (1024*1024):.2f}MB. "
+                f"Maximum size: {self.MAX_FILE_SIZE / (1024*1024)}MB"
+            )
+        
+        # Check file is readable
+        if not os.access(file_path, os.R_OK):
+            raise ValueError(f"File is not readable: {file_path}")
         
         return True
     

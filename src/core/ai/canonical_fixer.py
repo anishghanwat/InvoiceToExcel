@@ -8,7 +8,15 @@ AI output: Canonical JSON ONLY (strict schema, confidence scores)
 import os
 import json
 import re
+import time
+import sys
+from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+from src.utils.retry import retry_with_backoff
 
 # Load environment variables
 try:
@@ -28,16 +36,18 @@ class CanonicalFixer:
     - Never sees or cares about CSV formats
     """
     
-    def __init__(self, provider: str = "gemini", model: Optional[str] = None):
+    def __init__(self, provider: str = "gemini", model: Optional[str] = None, max_retries: int = 2):
         """
         Initialize AI canonical fixer.
         
         Args:
             provider: AI provider ('gemini', 'openai', etc.)
             model: Model name
+            max_retries: Maximum number of retry attempts for AI calls
         """
         self.provider = provider.lower()
         self.model = model or os.getenv('AI_MODEL', 'gemini-2.5-flash')
+        self.max_retries = max_retries
         self.client = None
         self._initialize_client()
     
@@ -174,16 +184,54 @@ CRITICAL REQUIREMENTS:
         return f"{system_prompt}\n\n{user_prompt}"
     
     def _call_ai(self, prompt: str) -> str:
-        """Call AI API."""
-        if self.provider == "gemini" and self.client:
-            model = self.client.GenerativeModel(self.model)
-            generation_config = {
-                "temperature": 0.1,
-                "max_output_tokens": 4096,
-            }
-            response = model.generate_content(prompt, generation_config=generation_config)
-            return response.text.strip()
-        return ""
+        """
+        Call AI API with retry logic.
+        
+        Args:
+            prompt: The prompt to send to AI
+            
+        Returns:
+            AI response text
+            
+        Raises:
+            Exception: If AI call fails after retries
+        """
+        if not self.client:
+            raise Exception("AI client not initialized")
+        
+        if self.provider == "gemini":
+            @retry_with_backoff(
+                max_retries=self.max_retries,
+                initial_delay=1.0,
+                max_delay=30.0,
+                retryable_exceptions=(Exception,),
+                on_retry=lambda attempt, error: print(f"⚠️  AI API retry {attempt}/{self.max_retries}...")
+            )
+            def _gemini_call():
+                try:
+                    model = self.client.GenerativeModel(self.model)
+                    generation_config = {
+                        "temperature": 0.1,
+                        "max_output_tokens": 4096,
+                    }
+                    response = model.generate_content(prompt, generation_config=generation_config)
+                    if not response or not response.text:
+                        raise Exception("Empty response from AI")
+                    return response.text.strip()
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # Check for quota/rate limit errors
+                    if "quota" in error_str or "429" in error_str or "rate limit" in error_str:
+                        raise Exception(f"AI quota/rate limit exceeded: {e}")
+                    # Check for invalid request errors (don't retry)
+                    if "invalid" in error_str or "400" in error_str:
+                        raise Exception(f"Invalid AI request: {e}")
+                    # Retry for other errors
+                    raise
+            
+            return _gemini_call()
+        
+        raise Exception(f"Unsupported AI provider: {self.provider}")
     
     def _parse_fix_response(
         self,
