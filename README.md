@@ -60,7 +60,6 @@ InvoiceToExcel/
 ├── docs/                        # Documentation
 ├── samples/                     # Sample documents
 ├── output/                      # Generated files
-├── batch_csv_generator.py       # Batch processing script
 ├── main.py                      # Main entry point
 ├── requirements.txt
 └── README.md
@@ -190,7 +189,8 @@ python tests/test_normalization_pipeline.py
 python main.py interactive "samples/husco 28 invoice.pdf"
 
 # Batch process all samples
-python batch_csv_generator.py
+# Use the new pipeline with templates
+python -m src.interfaces.cli <invoice_file> --template templates/invoice_summary.json
 ```
 
 ## 📈 Output Examples
