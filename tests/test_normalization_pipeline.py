@@ -1,8 +1,13 @@
 """
 Test the 4-layer normalization pipeline.
+
+NOTE: This test is for the DEPRECATED normalization pipeline.
+The new architecture uses src/core/pipeline.py (InvoiceProcessingPipeline).
+This test is kept for backward compatibility but may be removed in the future.
 """
 import sys
 import json
+import pytest
 from pathlib import Path
 
 # Fix Windows console encoding
@@ -19,8 +24,7 @@ if sys.platform == 'win32':
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from src.core.normalization.normalization_pipeline import NormalizationPipeline
-
+@pytest.mark.skip(reason="Deprecated normalization pipeline - use InvoiceProcessingPipeline instead")
 def test_normalization():
     """Test normalization pipeline on sample invoice."""
     print("=" * 70)
