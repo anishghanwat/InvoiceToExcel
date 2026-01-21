@@ -135,6 +135,8 @@ class CanonicalSchema:
                 "extraction_date": None,
                 "ai_version": None,
                 "processing_time_ms": 0,
+                "ledger": None,  # Ledger account name/code
+                "notes": None,  # Additional notes
                 "confidence": {
                     "overall": 0.0,
                     "fields": {}

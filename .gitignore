@@ -46,6 +46,7 @@ Thumbs.db
 *.xlsx
 *.json
 output/
+final_output/
 temp/
 uploads/
 

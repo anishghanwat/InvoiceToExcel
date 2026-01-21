@@ -351,6 +351,7 @@ class BulkInvoiceProcessor:
                 "file": file_path,
                 "success": True,
                 "canonical": result.get("canonical"),
+                "mapped_data": result.get("mapped_data"),  # Store mapped_data for consolidation
                 "validation": result.get("validation"),
                 "output_file": result.get("output_file"),
                 "processing_time_ms": result.get("processing_time_ms", 0)
@@ -491,12 +492,19 @@ class BulkInvoiceProcessor:
                     continue
                 processed_files.add(file_path)
                 
-                canonical = result.get("canonical")
-                if not canonical:
-                    continue
-                    
-                row = self._extract_row_from_canonical(canonical, template)
-                all_rows.append(row)
+                # Use mapped_data if available (new AI-driven approach)
+                mapped_data = result.get("mapped_data")
+                if mapped_data:
+                    # Extract row from mapped_data (already mapped by AI)
+                    row = self._extract_row_from_mapped_data(mapped_data, template)
+                    all_rows.append(row)
+                else:
+                    # Fallback to canonical extraction (old approach)
+                    canonical = result.get("canonical")
+                    if not canonical:
+                        continue
+                    row = self._extract_row_from_canonical(canonical, template)
+                    all_rows.append(row)
             
             # Write CSV
             try:
@@ -522,12 +530,27 @@ class BulkInvoiceProcessor:
         
         return str(consolidated_file)
     
+    def _extract_row_from_mapped_data(
+        self,
+        mapped_data: Dict[str, Any],
+        template: Dict[str, Any]
+    ) -> List[str]:
+        """Extract row values from mapped_data (already mapped by AI)."""
+        row = []
+        for col in template.get("columns", []):
+            header = col.get("header", "")
+            # mapped_data already has the correct column names as keys
+            value = mapped_data.get(header)
+            # Convert to string, handling None
+            row.append(str(value) if value is not None else "")
+        return row
+    
     def _extract_row_from_canonical(
         self,
         canonical: Dict[str, Any],
         template: Dict[str, Any]
     ) -> List[str]:
-        """Extract row values from canonical model based on template."""
+        """Extract row values from canonical model based on template (fallback)."""
         row = []
         for col in template.get("columns", []):
             path = col.get("path", "")

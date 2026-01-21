@@ -17,13 +17,13 @@ def show_help():
     print("=" * 60)
     print("Usage:")
     print("  python main.py cli <document_file>        - Simple extraction")
-    print("  python main.py interactive <document_file> - Interactive CSV creation")
+    print("  python main.py interactive                 - Interactive CSV creation (new flow)")
     print("  python main.py bulk <command>             - Bulk processing (see bulk help)")
     print("  python main.py help                       - Show this help")
     print()
     print("Examples:")
     print("  python main.py cli invoice.pdf")
-    print("  python main.py interactive receipt.jpg")
+    print("  python main.py interactive                 # Will prompt for template and files")
     print("  python main.py bulk process-dir ./invoices")
     print()
     print("Supported formats: PDF, PNG, JPG, JPEG")
@@ -51,14 +51,8 @@ def main():
         cli_main()
     
     elif command == "interactive":
-        # Run interactive CSV creator
-        if len(sys.argv) < 3:
-            print("Error: Please provide a document file path")
-            print("Usage: python main.py interactive <document_file>")
-            return
-        
-        # Modify sys.argv for interactive interface
-        sys.argv = ["interactive_csv.py", sys.argv[2]]
+        # Run interactive CSV creator (new flow - prompts for template and files)
+        # No file path required - the interactive mode will ask for everything
         interactive_main()
     
     elif command == "bulk":

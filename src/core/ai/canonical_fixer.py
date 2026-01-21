@@ -36,35 +36,100 @@ class CanonicalFixer:
     - Never sees or cares about CSV formats
     """
     
-    def __init__(self, provider: str = "gemini", model: Optional[str] = None, max_retries: int = 2):
+    def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, max_retries: int = 2):
         """
         Initialize AI canonical fixer.
         
         Args:
-            provider: AI provider ('gemini', 'openai', etc.)
-            model: Model name
+            provider: AI provider ('openai', 'gemini', etc.). If None, auto-detects based on available API keys (OpenAI first, then Gemini)
+            model: Model name (defaults based on provider)
             max_retries: Maximum number of retry attempts for AI calls
         """
-        self.provider = provider.lower()
-        self.model = model or os.getenv('AI_MODEL', 'gemini-2.5-flash')
         self.max_retries = max_retries
         self.client = None
-        self._initialize_client()
+        self.fallback_client = None
+        self.provider = None
+        self.fallback_provider = None
+        self.model = None
+        self.fallback_model = None
+        
+        # Auto-detect provider if not specified
+        if provider is None:
+            provider = self._auto_detect_provider()
+        
+        self.provider = provider.lower()
+        self._initialize_clients()
     
-    def _initialize_client(self):
-        """Initialize AI client."""
-        if self.provider == "gemini":
+    def _auto_detect_provider(self) -> str:
+        """Auto-detect provider based on available API keys (OpenAI first, then Gemini)."""
+        openai_key = os.getenv('OPENAI_API_KEY')
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        
+        # Check if keys are not just placeholders
+        if openai_key and openai_key != 'your_openai_api_key_here' and openai_key.strip():
+            return "openai"
+        elif gemini_key and gemini_key != 'your_gemini_api_key_here' and gemini_key.strip():
+            return "gemini"
+        else:
+            # Default to gemini if neither is available (for backward compatibility)
+            return "gemini"
+    
+    def _initialize_clients(self):
+        """Initialize primary and fallback AI clients."""
+        # Initialize primary provider
+        if self.provider == "openai":
+            try:
+                from openai import OpenAI
+                api_key = os.getenv('OPENAI_API_KEY')
+                if api_key and api_key != 'your_openai_api_key_here' and api_key.strip():
+                    # Store OpenAI client instance
+                    self.client = OpenAI(api_key=api_key)
+                    self.model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+                else:
+                    self.client = None
+            except ImportError:
+                print("⚠️  OpenAI package not installed. Install with: pip install openai")
+                self.client = None
+            except Exception as e:
+                print(f"⚠️  Failed to initialize OpenAI client: {e}")
+                self.client = None
+            
+            # Initialize Gemini as fallback
             try:
                 import google.generativeai as genai
                 api_key = os.getenv('GEMINI_API_KEY')
-                if api_key:
+                if api_key and api_key != 'your_gemini_api_key_here' and api_key.strip():
+                    genai.configure(api_key=api_key)
+                    self.fallback_client = genai
+                    self.fallback_provider = "gemini"
+                    fallback_model = os.getenv('AI_MODEL', 'gemini-2.5-flash')
+                    if '1.5' in fallback_model and '2.5' not in fallback_model:
+                        fallback_model = fallback_model.replace('1.5', '2.5')
+                    self.fallback_model = fallback_model
+                else:
+                    self.fallback_client = None
+            except ImportError:
+                self.fallback_client = None
+            except Exception as e:
+                print(f"⚠️  Failed to initialize Gemini fallback client: {e}")
+                self.fallback_client = None
+                
+        elif self.provider == "gemini":
+            try:
+                import google.generativeai as genai
+                api_key = os.getenv('GEMINI_API_KEY')
+                if api_key and api_key != 'your_gemini_api_key_here' and api_key.strip():
                     genai.configure(api_key=api_key)
                     self.client = genai
+                    self.model = os.getenv('AI_MODEL', 'gemini-2.5-flash')
                     if '1.5' in self.model and '2.5' not in self.model:
                         self.model = self.model.replace('1.5', '2.5')
                 else:
                     self.client = None
             except ImportError:
+                self.client = None
+            except Exception as e:
+                print(f"⚠️  Failed to initialize Gemini client: {e}")
                 self.client = None
     
     def fix_canonical(
@@ -76,6 +141,7 @@ class CanonicalFixer:
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
         """
         Fix and complete canonical invoice model using AI.
+        Uses primary provider (OpenAI) first, falls back to Gemini if primary fails.
         
         Args:
             canonical: Partial canonical invoice model (from deterministic extraction)
@@ -86,24 +152,37 @@ class CanonicalFixer:
         Returns:
             Tuple of (fixed canonical model, field confidence scores)
         """
-        if not self.client:
+        if not self.client and not self.fallback_client:
             return canonical, {}
         
-        try:
-            # Build AI prompt
-            prompt = self._build_fix_prompt(canonical, textract_output, document_text, validation_errors)
-            
-            # Call AI
-            response = self._call_ai(prompt)
-            
-            # Parse and apply fixes
-            fixed_canonical, confidences = self._parse_fix_response(response, canonical)
-            
-            return fixed_canonical, confidences
-            
-        except Exception as e:
-            print(f"⚠️  AI canonical fix failed: {e}. Returning original canonical.")
-            return canonical, {}
+        # Build AI prompt
+        prompt = self._build_fix_prompt(canonical, textract_output, document_text, validation_errors)
+        
+        # Try primary provider first
+        if self.client:
+            try:
+                response = self._call_ai(prompt, use_fallback=False)
+                fixed_canonical, confidences = self._parse_fix_response(response, canonical)
+                return fixed_canonical, confidences
+            except Exception as e:
+                print(f"⚠️  Primary AI provider ({self.provider}) failed: {e}")
+                if self.fallback_client:
+                    print(f"🔄 Falling back to {self.fallback_provider}...")
+                else:
+                    print(f"⚠️  No fallback available. Returning original canonical.")
+                    return canonical, {}
+        
+        # Try fallback provider
+        if self.fallback_client:
+            try:
+                response = self._call_ai(prompt, use_fallback=True)
+                fixed_canonical, confidences = self._parse_fix_response(response, canonical)
+                return fixed_canonical, confidences
+            except Exception as e:
+                print(f"⚠️  Fallback AI provider ({self.fallback_provider}) also failed: {e}")
+                return canonical, {}
+        
+        return canonical, {}
     
     def _build_fix_prompt(
         self,
@@ -119,19 +198,29 @@ class CanonicalFixer:
         If a value is not present or cannot be inferred, set it to null.
         Do not invent data.
         """
-        system_prompt = """You are an invoice data extraction engine.
+        system_prompt = """You are a deterministic invoice data extraction engine.
 
-Your task is to fill missing fields in the canonical invoice JSON.
-Use the document text to infer missing values.
+Task: Fill missing fields in the canonical invoice JSON by extracting data from the invoice document.
 
-Rules:
-- Only use values explicitly stated in the document or that can be reliably inferred
-- If a value is not present or cannot be inferred, set it to null
-- Do not invent data
-- Do NOT calculate or compute any values (totals, taxes, etc.) - only extract what's in the document
-- Return corrected canonical JSON with the exact same structure
-- Include confidence scores (0.0-1.0) for each field you fill
-- Preserve all existing correct values"""
+This is invoice-to-CSV data extraction. Extract invoice data fields from the document text.
+
+Extraction Rules (deterministic):
+1. Extract ONLY values explicitly stated in the document
+2. Do NOT calculate, compute, or infer values (no math operations)
+3. If a field is not in the document, set it to null
+4. Preserve all existing correct values
+5. Return canonical JSON with exact same structure
+6. Include confidence scores (0.0-1.0) for extracted fields
+
+Fields to Extract (if present in document):
+- Invoice: invoice_number, invoice_date, due_date, order_number
+- Seller: name, tax_id (GSTIN), address, pan
+- Buyer: name, tax_id (GSTIN), address, pan
+- Line Items: description, hsn, quantity, unit_price, taxable_value, taxes (cgst/sgst/igst rates and amounts)
+- Totals: taxable_value, cgst.amount, sgst.amount, igst.amount, round_off, total
+- Metadata: ledger (if mentioned in document)
+
+Important: Extract unit_price (not "rate") for line items. Extract round_off and ledger if they appear in the document."""
         
         # Build context
         context_parts = []
@@ -155,10 +244,18 @@ Rules:
 {context}
 
 Please:
-1. Fill any missing fields that can be inferred from the document
-2. Correct any fields that have validation errors
-3. Return the complete canonical JSON with the same structure
-4. Include a "confidence" object with confidence scores for each field you modified
+1. COMPREHENSIVELY fill ALL missing fields that can be inferred from the document - be thorough!
+2. Extract EVERY possible field including: rates, round off, ledger, complete addresses, all tax details
+3. For line items:
+   - If unit_price is missing but taxable_value and quantity exist, calculate: unit_price = taxable_value / quantity
+   - If quantity is missing but unit_price and taxable_value exist, calculate: quantity = taxable_value / unit_price
+   - Look for rate/price information in table headers, descriptions, or nearby text
+4. For round_off: Look for "Round Off", "Round", "Rounding", or any small adjustment amounts near totals
+5. For ledger: Look for "Ledger", "Account", "Account Name", "GL Code", or similar accounting references
+6. Correct any fields that have validation errors
+7. Return the complete canonical JSON with the same structure
+8. Include a "confidence" object with confidence scores for each field you modified
+9. Focus on extracting: invoice details, seller/buyer info, line items with rates/unit_price, all tax fields, totals including round off, and metadata like ledger
 
 Return JSON in this exact format (IMPORTANT: Return valid JSON only, no markdown, no code blocks):
 {{
@@ -183,12 +280,13 @@ CRITICAL REQUIREMENTS:
         
         return f"{system_prompt}\n\n{user_prompt}"
     
-    def _call_ai(self, prompt: str) -> str:
+    def _call_ai(self, prompt: str, use_fallback: bool = False) -> str:
         """
         Call AI API with retry logic.
         
         Args:
             prompt: The prompt to send to AI
+            use_fallback: Whether to use fallback provider (default: False, uses primary)
             
         Returns:
             AI response text
@@ -196,42 +294,89 @@ CRITICAL REQUIREMENTS:
         Raises:
             Exception: If AI call fails after retries
         """
-        if not self.client:
-            raise Exception("AI client not initialized")
+        if use_fallback:
+            client = self.fallback_client
+            provider = self.fallback_provider
+            model = self.fallback_model
+        else:
+            client = self.client
+            provider = self.provider
+            model = self.model
         
-        if self.provider == "gemini":
+        if not client:
+            raise Exception(f"AI client not initialized for provider: {provider}")
+        
+        if provider == "openai":
             @retry_with_backoff(
                 max_retries=self.max_retries,
                 initial_delay=1.0,
                 max_delay=30.0,
                 retryable_exceptions=(Exception,),
-                on_retry=lambda attempt, error: print(f"⚠️  AI API retry {attempt}/{self.max_retries}...")
+                on_retry=lambda attempt, error: print(f"⚠️  OpenAI API retry {attempt}/{self.max_retries}...")
+            )
+            def _openai_call():
+                try:
+                    # Client is already initialized in __init__
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "You are an invoice data extraction engine. Return only valid JSON, no markdown, no code blocks."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.1,
+                        max_tokens=4096
+                    )
+                    
+                    if not response or not response.choices or not response.choices[0].message.content:
+                        raise Exception("Empty response from OpenAI")
+                    
+                    return response.choices[0].message.content.strip()
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # Check for quota/rate limit errors
+                    if "quota" in error_str or "429" in error_str or "rate limit" in error_str:
+                        raise Exception(f"OpenAI quota/rate limit exceeded: {e}")
+                    # Check for invalid request errors (don't retry)
+                    if "invalid" in error_str or "400" in error_str or "401" in error_str:
+                        raise Exception(f"Invalid OpenAI request: {e}")
+                    # Retry for other errors
+                    raise
+            
+            return _openai_call()
+        
+        elif provider == "gemini":
+            @retry_with_backoff(
+                max_retries=self.max_retries,
+                initial_delay=1.0,
+                max_delay=30.0,
+                retryable_exceptions=(Exception,),
+                on_retry=lambda attempt, error: print(f"⚠️  Gemini API retry {attempt}/{self.max_retries}...")
             )
             def _gemini_call():
                 try:
-                    model = self.client.GenerativeModel(self.model)
+                    model_obj = client.GenerativeModel(model)
                     generation_config = {
                         "temperature": 0.1,
                         "max_output_tokens": 4096,
                     }
-                    response = model.generate_content(prompt, generation_config=generation_config)
+                    response = model_obj.generate_content(prompt, generation_config=generation_config)
                     if not response or not response.text:
-                        raise Exception("Empty response from AI")
+                        raise Exception("Empty response from Gemini")
                     return response.text.strip()
                 except Exception as e:
                     error_str = str(e).lower()
                     # Check for quota/rate limit errors
                     if "quota" in error_str or "429" in error_str or "rate limit" in error_str:
-                        raise Exception(f"AI quota/rate limit exceeded: {e}")
+                        raise Exception(f"Gemini quota/rate limit exceeded: {e}")
                     # Check for invalid request errors (don't retry)
                     if "invalid" in error_str or "400" in error_str:
-                        raise Exception(f"Invalid AI request: {e}")
+                        raise Exception(f"Invalid Gemini request: {e}")
                     # Retry for other errors
                     raise
             
             return _gemini_call()
         
-        raise Exception(f"Unsupported AI provider: {self.provider}")
+        raise Exception(f"Unsupported AI provider: {provider}")
     
     def _parse_fix_response(
         self,

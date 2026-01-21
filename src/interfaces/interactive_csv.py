@@ -18,6 +18,7 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+from typing import List, Dict, Any, Optional
 from ..core.pipeline import InvoiceProcessingPipeline
 from ..core.templates.template_parser import TemplateParser
 
@@ -30,12 +31,13 @@ class InteractiveCSVCreator:
         self.pipeline = InvoiceProcessingPipeline(use_ai=use_ai)
         self.template_parser = TemplateParser()
     
-    def process_document_to_csv(self, file_path: str, output_dir: str = "output") -> str:
+    def process_document_to_csv(self, file_path: str, template: Optional[Dict[str, Any]] = None, output_dir: str = "final_output") -> str:
         """
         Complete workflow: extract data and create CSV with user-defined template.
         
         Args:
             file_path: Path to input document
+            template: Optional template dict (if None, will use default)
             output_dir: Directory for output files
             
         Returns:
@@ -53,13 +55,19 @@ class InteractiveCSVCreator:
         # Show what was extracted
         self._show_extraction_summary(canonical)
         
-        # Step 2: Let user choose or create template
-        print("\n📋 Step 2: Choose template or create custom...")
-        template = self._get_user_template()
+        # Step 2: Use provided template or use default
+        if template is None:
+            print("\n📋 Step 2: Using default template...")
+            template = self.template_parser.create_default_template()
+        else:
+            print("\n📋 Step 2: Using provided template...")
         
         # Step 3: Export using template
         print(f"\n💾 Step 3: Exporting CSV with template...")
         from pathlib import Path
+        # Ensure final_output directory exists
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
         input_path = Path(file_path)
         csv_filename = f"{input_path.stem}_export.csv"
         csv_path = os.path.join(output_dir, csv_filename)
@@ -80,6 +88,58 @@ class InteractiveCSVCreator:
         self._show_final_summary(final_csv_path, template, canonical)
         
         return final_csv_path
+    
+    def process_bulk_files(
+        self,
+        file_paths: List[str],
+        template: Dict[str, Any],
+        output_dir: str = "final_output"
+    ) -> List[str]:
+        """
+        Process multiple files with the same template.
+        
+        Args:
+            file_paths: List of file paths to process
+            template: Template to use for all files
+            output_dir: Directory for output files
+            
+        Returns:
+            List of created CSV file paths
+        """
+        from src.core.bulk_processor import BulkInvoiceProcessor
+        
+        print("🚀 Starting Bulk Invoice Processing")
+        print("=" * 60)
+        print(f"📋 Template: {template.get('name', 'Custom Template')}")
+        print(f"📁 Files to process: {len(file_paths)}")
+        print("=" * 60)
+        
+        # Ensure final_output directory exists
+        from pathlib import Path
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        bulk_processor = BulkInvoiceProcessor(use_ai=True, enable_logging=True)
+        
+        results = bulk_processor.process_file_list(
+            file_paths=file_paths,
+            template=template,
+            output_format="csv",
+            output_dir=output_dir,
+            consolidated_output=True
+        )
+        
+        successful_files = [r.get('output_file') for r in results.get('results', []) if r.get('success')]
+        
+        print("\n" + "=" * 60)
+        print("🎉 Bulk Processing Complete!")
+        print("=" * 60)
+        print(f"✅ Successful: {results.get('successful', 0)}")
+        print(f"❌ Failed: {results.get('failed', 0)}")
+        if results.get('consolidated_output'):
+            print(f"📊 Consolidated output: {results.get('consolidated_output')}")
+        print("=" * 60)
+        
+        return successful_files
     
     def _show_extraction_summary(self, canonical: dict):
         """Show summary of what was extracted."""
@@ -233,9 +293,10 @@ class InteractiveCSVCreator:
 
 
 def main():
-    """Main function for interactive CSV creation."""
+    """Main function for interactive CSV creation with new user flow."""
     import sys
     from dotenv import load_dotenv
+    from pathlib import Path
     
     # Load environment variables
     load_dotenv()
@@ -246,32 +307,108 @@ def main():
         print("Please set up your .env file with AWS credentials.")
         sys.exit(1)
     
-    # Check command line arguments
-    if len(sys.argv) != 2:
-        print("Usage: python -m src.interfaces.interactive_csv <invoice_file>")
-        print("\nThis tool will:")
-        print("1. Extract data from your invoice using AWS Textract")
-        print("2. Build a canonical invoice model (finance-grade extraction)")
-        print("3. Let you choose or create a template for CSV export")
-        print("4. Create a CSV file with your structured data")
-        print("\nExample: python -m src.interfaces.interactive_csv invoice.pdf")
-        sys.exit(1)
-    
-    file_path = sys.argv[1]
-    
-    # Validate file exists
-    if not os.path.exists(file_path):
-        print(f"❌ Error: File not found: {file_path}")
-        sys.exit(1)
-    
     try:
         # Create interactive CSV creator
         creator = InteractiveCSVCreator()
         
-        # Process document and create CSV
-        csv_path = creator.process_document_to_csv(file_path)
+        # Step 1: Get template file path
+        print("🚀 Invoice to CSV Conversion - New Workflow")
+        print("=" * 60)
+        print("\n📋 Step 1: Template Configuration")
+        print("-" * 60)
         
-        print(f"\n🎯 All done! Your CSV is ready at: {csv_path}")
+        template_path = input("Enter path to template file (or press Enter to use default template): ").strip()
+        template = None
+        is_csv_template = template_path.lower().endswith('.csv') if template_path else False
+        
+        if template_path:
+            # Load template from file
+            if not os.path.exists(template_path):
+                print(f"⚠️  Template file not found: {template_path}")
+                print("Will use default template instead.")
+                template = creator.template_parser.create_default_template()
+            else:
+                try:
+                    # For CSV templates, we'll process a sample first for better AI mapping
+                    if is_csv_template:
+                        print("📊 CSV template detected - will process sample invoice first for intelligent mapping...")
+                    else:
+                        template = creator.template_parser.parse_from_file(template_path)
+                        print(f"✅ Loaded template: {template.get('name', 'Custom Template')}")
+                except Exception as e:
+                    print(f"⚠️  Failed to load template: {e}")
+                    print("Will use default template instead.")
+                    template = creator.template_parser.create_default_template()
+        else:
+            # Use default template
+            print("Using default template...")
+            template = creator.template_parser.create_default_template()
+        
+        # Step 2: Get file paths (single or bulk)
+        print("\n📁 Step 2: File Selection")
+        print("-" * 60)
+        print("Enter file paths (one per line, or comma-separated).")
+        print("Press Enter twice when done, or type 'done' to finish.")
+        
+        file_paths = []
+        print("\nEnter file path(s):")
+        while True:
+            line = input().strip()
+            if not line or line.lower() == 'done':
+                break
+            
+            # Handle comma-separated paths
+            paths = [p.strip() for p in line.split(',')]
+            for path in paths:
+                if path:
+                    if os.path.exists(path):
+                        file_paths.append(path)
+                        print(f"  ✅ Added: {path}")
+                    else:
+                        print(f"  ⚠️  File not found: {path}")
+        
+        if not file_paths:
+            print("❌ Error: No valid file paths provided!")
+            sys.exit(1)
+        
+        # Step 3: For CSV templates, process sample first for better AI mapping
+        if is_csv_template and template_path and template is None:
+            print(f"\n🔍 Step 3a: Processing sample invoice for intelligent header mapping...")
+            print("=" * 60)
+            try:
+                # Process first file to get canonical sample
+                sample_result = creator.pipeline.process_invoice(file_paths[0], output_format="json")
+                canonical_sample = sample_result.get('canonical', {})
+                
+                # Now parse template with sample for better AI mapping
+                template = creator.template_parser.parse_from_file(
+                    template_path,
+                    canonical_sample=canonical_sample,
+                    use_ai_mapping=True
+                )
+                print(f"✅ Template mapped with AI using sample data: {template.get('name', 'Custom Template')}")
+                print(f"📋 Mapped {len(template.get('columns', []))} columns")
+            except Exception as e:
+                print(f"⚠️  Sample processing failed: {e}")
+                print("Falling back to keyword-based mapping...")
+                try:
+                    template = creator.template_parser.parse_from_file(template_path, use_ai_mapping=False)
+                except Exception as e2:
+                    print(f"⚠️  Template loading failed: {e2}")
+                    template = creator.template_parser.create_default_template()
+        
+        # Step 3/4: Process files
+        print(f"\n🔄 Step {'3b' if is_csv_template and template_path else '3'}: Processing {len(file_paths)} file(s)...")
+        print("=" * 60)
+        
+        if len(file_paths) == 1:
+            # Single file processing
+            csv_path = creator.process_document_to_csv(file_paths[0], template=template)
+            print(f"\n🎯 All done! Your CSV is ready at: {csv_path}")
+        else:
+            # Bulk processing
+            csv_paths = creator.process_bulk_files(file_paths, template)
+            print(f"\n🎯 All done! Processed {len(csv_paths)} file(s)")
         
     except KeyboardInterrupt:
         print("\n\n⚠️  Cancelled by user")
